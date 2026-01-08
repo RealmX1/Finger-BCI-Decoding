@@ -1,23 +1,38 @@
+from typing import List, Dict, Tuple, Optional, Union
 import numpy as np
 import tensorflow as tf
-
-import glob
 
 import scipy
 import scipy.io
 from scipy.signal import resample
 
+from sklearn.utils.class_weight import compute_class_weight
+
 import os
+
+# ============ 配置常量 (Configuration Constants) ============
+# 滑动窗口步长 (Sliding window step size)
+# 论文: "step size of 125 ms" @ 1024Hz = 128 samples
+DEFAULT_STEP_SIZE = 128
 
 # EEGNet-specific imports
 from EEGModels_tf import EEGNet
 from tensorflow.keras import utils as np_utils
-from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras import backend as K
+from utils.training_callbacks import TableEpochLogger
+
+# 注意：为确保实验可复现性，建议在 params 中设置 'random_seed' 参数
+# Note: To ensure reproducibility, it's recommended to set 'random_seed' in params
 
 
 ###### data segmenting and relabeling functions ######
-def segment_data(data, labels, segment_size, step_size):
+def segment_data(
+    data: np.ndarray,
+    labels: np.ndarray,
+    segment_size: int,
+    step_size: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if segment_size <= 0 or step_size <= 0:
         raise ValueError("segment_size and step_size must be positive.")
 
@@ -41,44 +56,130 @@ def segment_data(data, labels, segment_size, step_size):
     return segmented_data, repeated_labels, repeated_indices
 
 
-def filter_and_relabel(data, label, keep_labels, new_labels):
+def filter_and_relabel(
+    data: np.ndarray,
+    label: np.ndarray,
+    keep_labels: List[int],
+    new_labels: Dict[int, int]
+) -> Tuple[np.ndarray, np.ndarray]:
     filtered_label = label[np.isin(label,keep_labels)]
     filtered_data = data[np.isin(label,keep_labels)]
     filtered_label = np.array([new_labels[l] for l in filtered_label])
     return filtered_data, filtered_label
 
-def generate_paths(subj_id, task, nclass, session_num, model_type, data_folder):
-    # get the file paths to the training data
+def generate_paths(
+    subj_id: int,
+    task: str,
+    nclass: int,
+    session_num: int,
+    model_type: str,
+    data_folder: str
+) -> List[str]:
+    """
+    生成训练数据路径。
+
+    对于 Base (Orig) 模型：
+        - 离线数据 (OfflineImagery/OfflineMovement)
+        - 之前所有session的在线数据 (Base + Finetune)
+
+    对于 Finetune 模型：
+        - 当前session的Base测试数据
+
+    参数:
+        subj_id: 被试ID (1-21)
+        task: 'MI' (运动想象) 或 'ME' (运动执行)
+        nclass: 类别数 (2 或 3)
+        session_num: session编号 (1-5)
+        model_type: 'Orig' (Base模型) 或 'Finetune' (微调模型)
+        data_folder: 数据根目录
+
+    返回:
+        data_paths: 数据目录路径列表
+    """
     subject_folder = os.path.join(data_folder, f'S{subj_id:02}')
+    task_suffix = 'Imagery' if task == 'MI' else 'Movement'
+    data_paths = []
 
-    if task == 'MI':
-        prefix = '*Imagery'
-    else:
-        prefix = '*Movement'
-    
-    if model_type == 'Finetune':
-        prefix_online = f'{prefix}_Sess{session_num:02}'
-        if nclass == 3:
-            suffix = f'{nclass}class_Base' # 3-class model is fine-tuned on 3-class same day data
-        else:
-            suffix = 'Base' # 2-class model is fine-tuned on both 2-class and 3-class same day data
-    
-        pattern = os.path.join(subject_folder, f'{prefix_online}*{suffix}')
-        data_paths = sorted(glob.glob(pattern))
-    else:
-        # load the offline session data
-        offline_pattern = os.path.join(subject_folder, prefix) 
-        data_paths = sorted(glob.glob(offline_pattern))
+    if model_type == 'Orig':  # Base模型：累积训练
+        # 1. 离线数据
+        offline_dir = os.path.join(subject_folder, f'Offline{task_suffix}')
+        if os.path.exists(offline_dir):
+            data_paths.append(offline_dir)
 
-        # load the prior online sessions 
-        for session in range(1,session_num):
-            prefix_online = f'{prefix}_Sess{session:02}'
-            online_pattern = os.path.join(subject_folder, f'{prefix_online}*')
-            data_paths.extend(sorted(glob.glob(online_pattern)))
+        # 2. 之前session的在线数据（Base + Finetune）
+        for prev_session in range(1, session_num):
+            for data_type in ['Base', 'Finetune']:
+                online_dir = os.path.join(
+                    subject_folder,
+                    f'Online{task_suffix}_Sess{prev_session:02}_{nclass}class_{data_type}'
+                )
+                if os.path.exists(online_dir):
+                    data_paths.append(online_dir)
+
+    elif model_type == 'Finetune':  # 微调模型：仅当前session的Base数据
+        finetune_dir = os.path.join(
+            subject_folder,
+            f'Online{task_suffix}_Sess{session_num:02}_{nclass}class_Base'
+        )
+        if os.path.exists(finetune_dir):
+            data_paths.append(finetune_dir)
+
     return data_paths
 
 
-def load_and_filter_data(data_paths, params):
+def generate_test_paths(
+    subj_id: int,
+    task: str,
+    nclass: int,
+    session_num: int,
+    model_type: str,
+    data_folder: str
+) -> Optional[str]:
+    """
+    生成测试数据路径。
+
+    测试数据逻辑：
+        - Base模型测试：当前session的Base数据 (如 OnlineImagery_Sess01_2class_Base)
+        - Finetune模型测试：当前session的Finetune数据 (如 OnlineImagery_Sess01_2class_Finetune)
+
+    参数:
+        subj_id: 被试ID (1-21)
+        task: 'MI' (运动想象) 或 'ME' (运动执行)
+        nclass: 类别数 (2 或 3)
+        session_num: session编号 (1-5)
+        model_type: 'Orig' (测试Base模型) 或 'Finetune' (测试Finetune模型)
+        data_folder: 数据根目录
+
+    返回:
+        test_path: 测试数据目录路径，若不存在则返回None
+    """
+    subject_folder = os.path.join(data_folder, f'S{subj_id:02}')
+    task_suffix = 'Imagery' if task == 'MI' else 'Movement'
+
+    # 测试数据类型与模型类型相同
+    test_type = 'Base' if model_type == 'Orig' else 'Finetune'
+
+    test_dir = os.path.join(
+        subject_folder,
+        f'Online{task_suffix}_Sess{session_num:02}_{nclass}class_{test_type}'
+    )
+
+    return test_dir if os.path.exists(test_dir) else None
+
+
+def load_and_filter_data(
+    data_paths: List[str],
+    params: Dict[str, Union[int, float, str, List[float]]]
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Union[int, float, str, List[float]]]]:
+    # H-3: 添加空路径检查
+    if not data_paths:
+        raise ValueError("data_paths is empty. No data paths provided for loading.")
+
+    # 检查路径是否存在
+    for path in data_paths:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Data path does not exist: {path}")
+
     label = [] #nTrials
     data = []#nTrials, nChannels, nSamples
 
@@ -91,14 +192,23 @@ def load_and_filter_data(data_paths, params):
     else:
         raise ValueError("nclass must be either 2 or 3.")
 
+    total_files = 0
     for filepath in data_paths:
-        for filename in sorted(os.listdir(filepath)):
+        files = sorted(os.listdir(filepath))
+        print(f"加载 {len(files)} 个文件从: {os.path.basename(filepath)}")
+        for filename in files:
             cur_data = []
-
             file_path = os.path.join(filepath, filename)
-            print(f"Processing file: {file_path}")
+            total_files += 1
 
             mat = scipy.io.loadmat(file_path)
+
+            # M-10: 验证必需字段
+            if 'eeg' not in mat:
+                raise KeyError(f"Missing 'eeg' field in {file_path}")
+            if 'event' not in mat:
+                raise KeyError(f"Missing 'event' field in {file_path}")
+
             eeg = mat['eeg']
             event = mat['event']
 
@@ -140,21 +250,31 @@ def load_and_filter_data(data_paths, params):
     data = np.concatenate(data,axis=0)
     label = np.concatenate(label,axis=0)
     label = label.flatten()
-    print(data.shape)
-    print(label.shape)
+    print(f"数据加载完成: {total_files} 个文件, {data.shape[0]} trials, {data.shape[1]} 通道")
 
     # relabel the data
     data, label = filter_and_relabel(data, label, keep_labels, new_labels)
     return data, label, params
 
-def train_models(data, label, save_name, params):
+def train_models(
+    data: np.ndarray,
+    label: np.ndarray,
+    save_name: str,
+    params: Dict[str, Union[int, float, str, List[float]]]
+) -> str:
 
     if 'modelpath' in params.keys(): # finetune
         print(f'Fine-tuning model: {save_name}...')
     else:
         print(f'Training model: {save_name}...')
     K.set_image_data_format('channels_last')
-    
+
+    # 设置随机种子以确保可复现性 (Set random seed for reproducibility)
+    random_seed = params.get('random_seed', 42)
+    np.random.seed(random_seed)
+    tf.random.set_seed(random_seed)
+    print(f'Using random seed: {random_seed}')
+
     nTrial = len(data)
     nChan = np.size(data,axis=1)
     shuffled_idx = np.random.permutation(nTrial)
@@ -171,11 +291,10 @@ def train_models(data, label, save_name, params):
 
     ############################# preprocessing ##################################
     # segment data
-    times = np.arange(0,params['maxtriallen'],1/params['srate'])
     DesiredLen = int(params['windowlen']*params['downsrate'])
 
     segment_size = int(params['windowlen']*params['srate'])  # size of each segment - 1 s
-    step_size = 128    # step size
+    step_size = params.get('step_size', DEFAULT_STEP_SIZE)
     X_train, Y_train, I_train = segment_data(X_train, Y_train, segment_size, step_size)
     X_validate, Y_validate, I_validate = segment_data(X_validate, Y_validate, segment_size, step_size)
 
@@ -226,6 +345,9 @@ def train_models(data, label, save_name, params):
     callback_es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=80)
     callback_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=30)
 
+    # 注意: 使用 legacy.Adam 以确保 TensorFlow 2.10 兼容性
+    # Note: Using legacy.Adam for TensorFlow 2.10 compatibility
+    # 在 TF 2.11+ 中可改为 tf.keras.optimizers.Adam
     if 'modelpath' in params.keys(): # finetune: smaller starting lr
         optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=1e-4)
     else:
@@ -238,26 +360,36 @@ def train_models(data, label, save_name, params):
     checkpointer = ModelCheckpoint(filepath=save_name, verbose=1,monitor='val_accuracy',
                                     mode='max',save_best_only=True)
 
-    class_weights = {0:1, 1:1, 2:1, 3:1}
+    # 动态计算类别权重，处理类别不平衡
+    train_labels = np.argmax(Y_train, axis=1)
+    class_weights_array = compute_class_weight(
+        'balanced',
+        classes=np.unique(train_labels),
+        y=train_labels
+    )
+    class_weights = {i: w for i, w in enumerate(class_weights_array)}
+    print(f"Class weights: {class_weights}")
 
     if 'modelpath' in params.keys(): # finetune
         params['epochs'] = 100
-        params['layers_fine_tune'] = 12
+        params['layers_to_freeze'] = 4
         model.load_weights(params['modelpath'])
         model.trainable = True
-        num_layers = len(model.layers)
-        num_layers_fine_tune = params['layers_fine_tune']
 
-        for model_layer in model.layers[:num_layers - num_layers_fine_tune]:
+        for model_layer in model.layers[:params['layers_to_freeze']]:
             print(f"FREEZING LAYER: {model_layer}")
             model_layer.trainable = False
-        
+
     else:
         params['epochs'] = 300
 
-    model.fit(X_train, Y_train, batch_size = batch_size, epochs = params['epochs'], 
-                verbose = 2, validation_data=(X_validate, Y_validate),
-                callbacks=[checkpointer, callback_es, callback_lr], class_weight = class_weights)
+    # 使用自定义表格日志回调 (Use custom table logger callback)
+    epoch_logger = TableEpochLogger(header_every=20, keep_every=5)
+
+    model.fit(X_train, Y_train, batch_size = batch_size, epochs = params['epochs'],
+                verbose = 0, validation_data=(X_validate, Y_validate),
+                callbacks=[checkpointer, callback_es, callback_lr, epoch_logger],
+                class_weight = class_weights)
 
     print("Training Finished!")
     print(f"Model saved to {save_name}")

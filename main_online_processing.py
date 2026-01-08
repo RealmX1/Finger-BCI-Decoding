@@ -13,6 +13,7 @@
 #
 #   Copyright (C) Yidan Ding 2025
 #
+import logging
 import numpy as np
 import scipy
 from scipy.signal import resample
@@ -44,15 +45,19 @@ class BciSignalProcessing(BciGenericSignalProcessing):
 	#############################################################
 	
 	def Preflight(self, sigprops):
-		self.out_signal_dim = (4,1) # send the prob 
-		
+		# Output dimension: use nclasses if available, but ensure at least 4 outputs
+		# for backward compatibility with the robotic hand interface
+		nclasses = getattr(self, 'nclasses', 4)
+		out_dim = max(nclasses, 4)  # Maintain at least 4 outputs for robotic hand
+		self.out_signal_dim = (out_dim, 1)  # send the prob
+
 		pass
 		
 	#############################################################
 	
 	def Initialize(self, indim, outdim):
 
-		self.FeefbackOn = 0
+		self.FeedbackOn = 0
 		self.newsig = []
 		self.chans = self.in_signal_dim[0]
 		self.samplingRate = int(self.params['SamplingRate'].replace("Hz", ""))
@@ -65,6 +70,12 @@ class BciSignalProcessing(BciGenericSignalProcessing):
 						dropoutRate = 0.5, kernLength = 32, F1 = 8, D = 2, F2 = 16, 
 						dropoutType = 'Dropout')
 		self.model.load_weights(self.params['ModelPath'])
+
+		# Set up logger for error handling
+		self.logger = logging.getLogger(__name__)
+
+		# Calculate output dimension (at least 4 for robotic hand compatibility)
+		self.out_dim = max(self.nclasses, 4)
 		pass
 		
 	#############################################################
@@ -85,33 +96,36 @@ class BciSignalProcessing(BciGenericSignalProcessing):
 		
 
 		if np.size(self.newsig,1) >= self.DesiredLen:
-			self.FeefbackOn = 1
+			self.FeedbackOn = 1
 			self.newsig = self.newsig[:,-self.DesiredLen:]
 
 		# feed into EEGNet
-		if self.FeefbackOn:
+		if self.FeedbackOn:
+			try:
+				# bandpass filtering
+				padding_length = 100  # Number of zeros to pad
+				padded_sig = np.pad(self.newsig, ((0,0),(padding_length,padding_length)), 'constant', constant_values=0)
 
-			# bandpass filtering
-			padding_length = 100  # Number of zeros to pad
-			padded_sig = np.pad(self.newsig, ((0,0),(padding_length,padding_length)), 'constant', constant_values=0)
+				b, a = scipy.signal.butter(4, [4, 40], btype='bandpass', fs=self.newsamplingRate)
+				padded_sig = scipy.signal.lfilter(b, a, padded_sig, axis=-1)
+				insig = padded_sig[:,padding_length:-padding_length]
 
-			b, a = scipy.signal.butter(4, [4, 40], btype='bandpass', fs=self.newsamplingRate)
-			padded_sig = scipy.signal.lfilter(b, a, padded_sig, axis=-1)
-			insig = padded_sig[:,padding_length:-padding_length]
-
-			insig = scipy.stats.zscore(insig, axis=1, nan_policy='omit')
-			insig = insig.reshape(1,self.chans,self.DesiredLen,kernels)
-			output			 = self.model.predict(insig)
-			output			 = output.flatten()
-			self.probs       = np.zeros((4,))
-			for i, j in enumerate(self.classlist):
-				self.probs[j-1]		 = output[i]
+				insig = scipy.stats.zscore(insig, axis=1, nan_policy='omit')
+				insig = insig.reshape(1,self.chans,self.DesiredLen,kernels)
+				output			 = self.model.predict(insig)
+				output			 = output.flatten()
+				self.probs       = np.zeros((self.out_dim,))
+				for i, j in enumerate(self.classlist):
+					self.probs[j-1]		 = output[i]
+			except Exception as e:
+				self.logger.error(f"Error during online prediction: {e}", exc_info=True)
+				self.probs = np.zeros((self.out_dim,))
 		else:
-			self.probs       = np.zeros((4,))
+			self.probs       = np.zeros((self.out_dim,))
 
-		self.states['FeedbackProc'] = self.FeefbackOn
-		
-		return self.probs.reshape(4,1)
+		self.states['FeedbackProc'] = self.FeedbackOn
+
+		return self.probs.reshape(self.out_dim, 1)
 		
 #################################################################
 #################################################################
