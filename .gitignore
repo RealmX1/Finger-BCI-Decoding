@@ -1,3 +1,35 @@
-**/__pycache__/*
+# Python
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
 
+# Virtual environments
+.venv/
+.venv-wsl/
+venv/
+
+# Data and outputs
+data/
+results/
+models/
+
+# Model files (can be large)
+*.keras
+*.h5
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
 nul
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# TensorFlow/Keras cache
+*.cache/

@@ -210,10 +210,7 @@ class StratifiedKFoldTrainer:
             )
 
             # 编译模型
-            # 注意: 使用 legacy.Adam 以确保 TensorFlow 2.10 兼容性
-            # Note: Using legacy.Adam for TensorFlow 2.10 compatibility
-            # 在 TF 2.11+ 中可改为 tf.keras.optimizers.Adam
-            optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
+            optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
             model.compile(
                 loss='categorical_crossentropy',
                 optimizer=optimizer,
@@ -221,7 +218,7 @@ class StratifiedKFoldTrainer:
             )
 
             # 回调函数
-            fold_save_path = f"{save_prefix}_fold{fold_idx + 1}.h5"
+            fold_save_path = f"{save_prefix}_fold{fold_idx + 1}.keras"
             # 回调函数 (使用表格日志)
             epoch_logger = TableEpochLogger(header_every=20, keep_every=5)
             callbacks = [
@@ -232,8 +229,8 @@ class StratifiedKFoldTrainer:
                     mode='max',
                     save_best_only=True
                 ),
-                EarlyStopping(monitor='val_loss', patience=80),
-                ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=30),
+                EarlyStopping(monitor='val_loss', patience=10),
+                ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5),
                 epoch_logger
             ]
 
@@ -263,7 +260,7 @@ class StratifiedKFoldTrainer:
             }
             results.append(fold_result)
 
-            print(f"Fold {fold_idx + 1} 最佳验证准确率: {fold_result['best_val_accuracy']:.4f}")
+            print(f"\nFold {fold_idx + 1} 最佳验证准确率: {fold_result['best_val_accuracy']:.4f}")
 
             # 更新最佳模型
             if fold_result['best_val_accuracy'] > best_val_acc:
@@ -285,21 +282,34 @@ class StratifiedKFoldTrainer:
 
         # 保存交叉验证结果到JSON文件
         cv_results_path = f"{save_prefix}_cv_results.json"
+
+        # 辅助函数：将NumPy类型转换为Python原生类型
+        def convert_to_native(val):
+            if val is None:
+                return None
+            if isinstance(val, (np.integer,)):
+                return int(val)
+            if isinstance(val, (np.floating,)):
+                return float(val)
+            if isinstance(val, (list, tuple)):
+                return [convert_to_native(v) for v in val]
+            return val
+
         cv_results_data = {
             # 时间戳
             'timestamp': datetime.now().isoformat(),
             # 训练参数
             'training_params': {
-                'n_splits': self.n_splits,
-                'random_state': self.random_state,
-                'nclass': params.get('nclass'),
-                'windowlen': params.get('windowlen'),
-                'srate': params.get('srate'),
-                'downsrate': params.get('downsrate'),
-                'bandpass_filt': params.get('bandpass_filt'),
-                'dropout_ratio': params.get('dropout_ratio', 0.5),
-                'epochs': params.get('epochs', 300),
-                'step_size': params.get('step_size', DEFAULT_STEP_SIZE)
+                'n_splits': int(self.n_splits),
+                'random_state': int(self.random_state) if self.random_state is not None else None,
+                'nclass': convert_to_native(params.get('nclass')),
+                'windowlen': convert_to_native(params.get('windowlen')),
+                'srate': convert_to_native(params.get('srate')),
+                'downsrate': convert_to_native(params.get('downsrate')),
+                'bandpass_filt': convert_to_native(params.get('bandpass_filt')),
+                'dropout_ratio': float(params.get('dropout_ratio', 0.5)),
+                'epochs': int(params.get('epochs', 300)),
+                'step_size': convert_to_native(params.get('step_size', DEFAULT_STEP_SIZE))
             },
             # 各折结果（不包含完整训练历史以减小文件大小）
             'fold_results': [
@@ -424,11 +434,8 @@ def train_with_simple_split(data, label, params, save_name, val_ratio=0.2):
     )
 
     # 编译
-    # 注意: 使用 legacy.Adam 以确保 TensorFlow 2.10 兼容性
-    # Note: Using legacy.Adam for TensorFlow 2.10 compatibility
-    # 在 TF 2.11+ 中可改为 tf.keras.optimizers.Adam
     lr = 1e-4 if is_finetune else 0.001
-    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=lr)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
     # 微调：加载预训练权重并冻结部分层
@@ -449,8 +456,8 @@ def train_with_simple_split(data, label, params, save_name, val_ratio=0.2):
     callbacks = [
         ModelCheckpoint(filepath=save_name, verbose=0, monitor='val_accuracy',
                        mode='max', save_best_only=True),
-        EarlyStopping(monitor='val_loss', patience=30 if is_finetune else 80),
-        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=15 if is_finetune else 30),
+        EarlyStopping(monitor='val_loss', patience=8 if is_finetune else 10),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4 if is_finetune else 5),
         epoch_logger
     ]
 

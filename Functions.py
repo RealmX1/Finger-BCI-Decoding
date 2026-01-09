@@ -342,16 +342,13 @@ def train_models(
     model.summary()
 
     # Callbacks
-    callback_es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=80)
-    callback_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=30)
+    callback_es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10)
+    callback_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5)
 
-    # 注意: 使用 legacy.Adam 以确保 TensorFlow 2.10 兼容性
-    # Note: Using legacy.Adam for TensorFlow 2.10 compatibility
-    # 在 TF 2.11+ 中可改为 tf.keras.optimizers.Adam
     if 'modelpath' in params.keys(): # finetune: smaller starting lr
-        optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=1e-4)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
     else:
-        optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, 
                 metrics = ['accuracy'])

@@ -2,11 +2,20 @@
 
 由于 TensorFlow 在 Windows 原生环境下不再支持 CUDA（从 2.11 版本开始），推荐使用 WSL2 进行 GPU 加速训练。
 
+> **注意**: 如果您使用 RTX 50 系列 (Blackwell) GPU，请参阅 [RTX50_GPU_SETUP.md](RTX50_GPU_SETUP.md)，其中包含针对 compute capability 12.0 的特殊配置。
+
+## 适用范围
+
+本指南适用于：
+- RTX 40 系列 (Ada Lovelace)
+- RTX 30 系列 (Ampere)
+- RTX 20 系列 (Turing)
+
 ## 前置条件
 
 - Windows 11 或 Windows 10 (21H2+)
-- NVIDIA GPU (RTX 5070)
-- 已安装 NVIDIA 驱动 (581.80+)
+- NVIDIA GPU
+- 已安装 NVIDIA 驱动 (470.76+)
 
 ## 步骤 1: 安装 WSL2
 

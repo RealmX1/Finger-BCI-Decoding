@@ -103,7 +103,7 @@ data_paths = generate_paths(subj_id, task, nclass, session_num, model_type = mod
 
 data, label, params = load_and_filter_data(data_paths, params)
 
-save_name = os.path.join(save_folder, f'S{subj_id:02}_Sess{session_num:02}_{task}_{nclass}class_{modeltype}.h5')
+save_name = os.path.join(save_folder, f'S{subj_id:02}_Sess{session_num:02}_{task}_{nclass}class_{modeltype}.keras')
 
 if modeltype == 'Finetune':
     params['modelpath'] = save_name.replace('Finetune','Orig') # the pre-trained model to be fine-tuned on

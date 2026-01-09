@@ -2,8 +2,9 @@
 
 EEG-based Brain-Computer Interface for Real-time Individual Finger-Level Robotic Hand Control.
 
-[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/)
-[![TensorFlow 2.10](https://img.shields.io/badge/tensorflow-2.10-orange.svg)](https://www.tensorflow.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![TensorFlow 2.16+](https://img.shields.io/badge/tensorflow-2.16%2B-orange.svg)](https://www.tensorflow.org/)
+[![Keras 3](https://img.shields.io/badge/keras-3.x-red.svg)](https://keras.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## Overview
@@ -31,28 +32,56 @@ The system decodes motor imagery (MI) and motor execution (ME) EEG signals to co
 
 ### Prerequisites
 
-- Python 3.10
-- [uv](https://github.com/astral-sh/uv) package manager
-- NVIDIA GPU (optional, for accelerated training via WSL2)
+- Python 3.10 or 3.11
+- NVIDIA GPU (recommended for training)
+- Conda (for GPU setup) or [uv](https://github.com/astral-sh/uv) (for CPU-only)
 
-### Quick Start
+### Option 1: GPU Training (Recommended)
+
+For NVIDIA RTX 50 series (Blackwell) or newer GPUs with compute capability 12.0+:
+
+```bash
+# Create conda environment
+conda create --name tf_gpu python=3.11.4 pip -y
+conda activate tf_gpu
+
+# Install TensorFlow Nightly (has compute capability 12.0 support)
+pip install tf-nightly
+
+# Install CUDA libraries
+pip install nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 \
+    nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusparse-cu12 \
+    nvidia-cusolver-cu12 nvidia-cuda-nvrtc-cu12
+
+# Configure library path
+conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$CONDA_PREFIX/lib/python3.11/site-packages/nvidia/cudnn/lib:$CONDA_PREFIX/lib/python3.11/site-packages/nvidia/cublas/lib:$CONDA_PREFIX/lib/python3.11/site-packages/nvidia/cuda_runtime/lib
+conda deactivate && conda activate tf_gpu
+
+# Install other dependencies
+pip install scipy scikit-learn matplotlib
+
+# Verify GPU
+python -c "import tensorflow as tf; print('GPU:', tf.config.list_physical_devices('GPU'))"
+```
+
+**GPU Setup Guides**:
+- RTX 50 series (Blackwell): [docs/RTX50_GPU_SETUP.md](docs/RTX50_GPU_SETUP.md)
+- RTX 40/30/20 series + WSL2: [docs/WSL2_GPU_SETUP.md](docs/WSL2_GPU_SETUP.md)
+
+### Option 2: CPU-Only (Quick Start)
 
 ```bash
 # Clone the repository
 git clone https://github.com/your-username/Finger-BCI-Decoding.git
 cd Finger-BCI-Decoding
 
-# Create virtual environment and install dependencies
+# Create virtual environment with uv
 uv venv --python 3.10
 uv sync
 
 # Verify installation
 uv run python -c "import tensorflow as tf; print(f'TensorFlow {tf.__version__}')"
 ```
-
-### GPU Acceleration (WSL2)
-
-For GPU-accelerated training on Windows, see [docs/WSL2_GPU_SETUP.md](docs/WSL2_GPU_SETUP.md).
 
 ## Project Structure
 
@@ -76,8 +105,10 @@ Finger-BCI-Decoding/
 │   └── run_experiment.py       # Complete experiment pipeline
 │
 ├── results/                    # Experiment outputs
+├── models/                     # Saved model files (.keras)
 └── docs/
-    └── WSL2_GPU_SETUP.md      # GPU setup guide
+    ├── RTX50_GPU_SETUP.md     # RTX 50 series GPU setup
+    └── WSL2_GPU_SETUP.md      # WSL2 GPU setup (RTX 40/30/20)
 ```
 
 ## Usage
@@ -85,12 +116,15 @@ Finger-BCI-Decoding/
 ### Running Complete Experiment
 
 ```bash
+# Activate GPU environment
+conda activate tf_gpu
+
 # Binary classification (Thumb vs Pinky) for Subject 1
-uv run python scripts/run_experiment.py \
+python scripts/run_experiment.py \
     --subj 1 \
     --task MI \
     --nclass 2 \
-    --data-folder /path/to/data
+    --data-folder ./data
 ```
 
 ### Command Line Arguments
@@ -108,11 +142,14 @@ uv run python scripts/run_experiment.py \
 ### Training Individual Models
 
 ```bash
+# Activate environment
+conda activate tf_gpu
+
 # Train Base model (pre-training)
-uv run python main_model_training.py 1 1 2 MI Orig
+python main_model_training.py 1 1 2 MI Orig --data-folder ./data --save-folder ./models
 
 # Train Finetune model (transfer learning)
-uv run python main_model_training.py 1 1 2 MI Finetune
+python main_model_training.py 1 1 2 MI Finetune --data-folder ./data --save-folder ./models
 ```
 
 Arguments: `subj_id session_num nclass task modeltype`
@@ -156,7 +193,7 @@ Each `.mat` file contains:
 1. Load offline data + previous session data (cumulative)
 2. 5-fold stratified cross-validation
 3. Dynamic class weight balancing
-4. Early stopping (patience=80)
+4. Early stopping (patience=10)
 5. Learning rate reduction on plateau
 
 ### Fine-tuning
@@ -194,11 +231,21 @@ The `main_online_processing.py` script integrates with BCPy2000 for real-time BC
 
 ## Dependencies
 
-- TensorFlow 2.10.1
-- NumPy 1.23.x
-- SciPy 1.10-1.11
-- scikit-learn 1.2-1.3
-- Matplotlib 3.7+
+### GPU Training (tf_gpu environment)
+- TensorFlow Nightly 2.21+ (for RTX 50 series)
+- Keras 3.x
+- NumPy 2.x
+- SciPy 1.16+
+- scikit-learn 1.8+
+
+### CPU Training (uv environment)
+- TensorFlow 2.16+
+- Keras 3.x
+- NumPy 1.x or 2.x
+- SciPy 1.10+
+- scikit-learn 1.2+
+
+**Note**: This codebase is compatible with Keras 3. Model files use the native `.keras` format.
 
 ## Citation
 
@@ -226,6 +273,19 @@ If you use this code in your research, please cite:
 ## References
 
 1. Lawhern, V. J., et al. (2018). EEGNet: a compact convolutional neural network for EEG-based brain-computer interfaces. *Journal of Neural Engineering*, 15, 056013.
+
+## Changelog
+
+### v2.0.0 (2026-01)
+- **Keras 3 Compatibility**: Updated codebase for TensorFlow 2.16+ and Keras 3.x
+  - Replaced `tf.keras.optimizers.legacy.Adam` with `tf.keras.optimizers.Adam`
+  - Updated model save format from `.h5` to native `.keras` format
+- **RTX 50 Series Support**: Added setup guide for Blackwell architecture GPUs
+- **Documentation**: Reorganized installation guides for different GPU generations
+
+### v1.0.0 (2025)
+- Initial release accompanying Nature Communications publication
+- TensorFlow 2.10 with Keras 2.x
 
 ## License
 

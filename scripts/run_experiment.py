@@ -129,7 +129,7 @@ def train_base_model(subj_id, task, nclass, session_num, data_folder, save_folde
         return best_model_path, cv_results
     else:
         # 简单划分训练
-        model_path = f"{model_prefix}.h5"
+        model_path = f"{model_prefix}.keras"
         params_copy = params.copy()
         params_copy['epochs'] = params.get('epochs_base', 300)
         train_with_simple_split(data, label, params_copy, model_path)
@@ -173,7 +173,7 @@ def train_finetune_model(subj_id, task, nclass, session_num, base_model_path,
     # 模型保存路径
     model_path = os.path.join(
         save_folder,
-        f'S{subj_id:02}_Sess{session_num:02}_{task}_{nclass}class_Finetune.h5'
+        f'S{subj_id:02}_Sess{session_num:02}_{task}_{nclass}class_Finetune.keras'
     )
 
     # 配置微调参数
